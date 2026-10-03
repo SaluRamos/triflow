@@ -198,8 +198,14 @@ Outputs are saved to `outputs/train/<config_name>/<timestamp>/`.
 
 ## Inference
 
-`-i` is searched for `.obj` files non-recursively, so point it at a directory that
-contains the meshes directly rather than at a parent of per-category subdirectories.
+`-i` is searched for `.obj` and `.glb` files non-recursively, so point it at a
+directory that contains the meshes directly rather than at a parent of
+per-category subdirectories. GLB geometry is loaded and processed directly;
+outputs are written as `.obj` files named
+`<input>_faces_<face_count>_qem_<threshold>_quad_<quad_ratio>.obj` (for example,
+`chair_faces_4000_qem_12_quad_0p95.obj`). When `--face_count 0` or
+`--quad_ratio 0` is used, the corresponding filename value is `input` to indicate
+that the value is computed from the input mesh.
 To try it on the bundled samples:
 
 ```bash
@@ -213,7 +219,7 @@ python inference.py \
 
 | Argument | Default | Description |
 |---|---|---|
-| `-i, --input_dir` | (required) | Directory containing input `.obj` files |
+| `-i, --input_dir` | (required) | Directory containing input `.obj` or `.glb` files |
 | `-o, --output_dir` | (required) | Directory for output meshes |
 | `--face_count` | `4000` | Target face count (0 = use input mesh count) |
 | `--qem_threshold` | `12.0` | QEM error threshold for mesh simplification |

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import trimesh
 from accelerate import Accelerator
 from hydra import compose, initialize
 from hydra.utils import instantiate
@@ -27,7 +28,7 @@ def run_inference(
     qem_threshold=12.0,
     quad_ratio=0.95,
 ):
-    """Run TriFlow mesh-to-mesh topology-aware remeshing on a directory of .obj files.
+    """Run TriFlow remeshing on a directory of .obj or .glb files.
 
     For each input mesh the pipeline: (1) encodes the SDF through the SDF VAE to
     obtain a conditioning latent, (2) samples an NVV latent with flow matching,
@@ -48,7 +49,7 @@ def run_inference(
     meaning and tuning.
 
     Args:
-        input_dir: Directory containing input ``.obj`` files.
+        input_dir: Directory containing input ``.obj`` or ``.glb`` files.
         output_dir: Directory where output meshes are written. Created if missing.
         rank: Worker rank for distributed inference, in ``[0, world_size)``.
         world_size: Total number of distributed workers.
@@ -63,7 +64,11 @@ def run_inference(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    mesh_paths = list(input_dir.glob("*.obj"))
+    mesh_paths = sorted(
+        path
+        for path in input_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".obj", ".glb"}
+    )
     mesh_paths = [p for i, p in enumerate(mesh_paths) if i % world_size == rank]
 
     # initialize model
@@ -110,7 +115,13 @@ def run_inference(
     for i in range(len(mesh_paths)):
         mesh_path = mesh_paths[i]
         mesh_name = mesh_path.stem
-        output_stem = f"{mesh_name}"
+        face_count_label = "input" if face_count is None else str(face_count)
+        threshold_label = f"{qem_threshold:g}".replace(".", "p")
+        quad_ratio_label = "input" if quad_ratio is None else f"{quad_ratio:g}".replace(".", "p")
+        output_stem = (
+            f"{mesh_name}_faces_{face_count_label}_qem_{threshold_label}"
+            f"_quad_{quad_ratio_label}"
+        )
         output_file = output_dir / f"{output_stem}.obj"
         if output_file.exists():
             print(f"({i}/{len(mesh_paths)}) {output_file} already exists, skipping...")
@@ -119,6 +130,9 @@ def run_inference(
         print(f"({i}/{len(mesh_paths)}) Processing {mesh_path}...")
 
         # import data
+        source_center = trimesh.load(
+            mesh_path, force="mesh", process=False
+        ).bounds.mean(axis=0)
         results, trimesh_mesh, augmented_mesh, metadata = process_one_mesh(
             mesh_path,
             res_fine=512,
@@ -216,15 +230,27 @@ def run_inference(
             verbose=True,
             debug_output=None,
         )
+
+        # ``process_one_mesh`` normalizes the source mesh into the voxel grid.
+        # Undo that uniform scale and centering before exporting so the result
+        # stays in the input mesh's coordinate system and units.
+        grid_to_source = np.eye(4)
+        grid_to_source[:3, :3] /= metadata["scale_factor"]
+        grid_to_source[:3, 3] = (
+            source_center - (resolution / 2) / metadata["scale_factor"]
+        )
+        mesh_qem.apply_transform(grid_to_source)
+
         end_time = time.time()
         total_time += end_time - start_time
         count += 1
 
-        mesh_qem.export(output_dir / f"{output_stem}.obj")
+        mesh_qem.export(output_file)
 
     if count == 0:
         print(
-            f"No meshes were processed. Check that '{input_dir}' contains .obj files "
+            f"No meshes were processed. Check that '{input_dir}' contains .obj or "
+            f".glb files "
             f"directly (the search is not recursive, so files in subdirectories are "
             f"ignored), and that '{output_dir}' does not already contain the results."
         )
